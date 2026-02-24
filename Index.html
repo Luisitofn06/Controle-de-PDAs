@@ -1,119 +1,331 @@
-const SHEET_ID = '1xcm_9ViPSx7gkaN8AsTzO-OKPlZ0bo4UhN3q7VnQ-YA'; // <--- TOME CUIDADO AQUI
-
-function doGet() {
-  return HtmlService.createTemplateFromFile('Index')
-    .evaluate()
-    .setTitle('Shopee PDA Control')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
-    .addMetaTag('viewport', 'width=device-width, initial-scale=1, user-scalable=no');
-}
-
-function getAppDados() {
-  const email = Session.getActiveUser().getEmail();
-  const ss = SpreadsheetApp.openById(SHEET_ID);
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
   
-  // 1. Busca Saldo
-  const abaSaldos = ss.getSheetByName('Saldos');
-  let dadosSaldos = abaSaldos.getDataRange().getValues();
-  let meuSaldoRow = dadosSaldos.find(r => r[0] == email);
-  
-  if (!meuSaldoRow) {
-    abaSaldos.appendRow([email, 0]);
-    meuSaldoRow = [email, 0];
-  }
-
-  // 2. Busca Usuários para Troca (Exceto eu e Estoque)
-  const listaColegas = dadosSaldos
-    .filter(r => r[0] != email && r[0] != 'ESTOQUE' && r[0] != 'Email')
-    .map(r => r[0]);
-
-  // 3. Busca Notificações (Trocas onde sou Destino e está PENDENTE)
-  const abaTrans = ss.getSheetByName('Transacoes');
-  const dadosTrans = abaTrans.getDataRange().getValues();
-  
-  // Recebimentos Pendentes (Preciso aceitar)
-  const entradasPendentes = dadosTrans
-    .filter(r => r[3] == email && r[6] == 'PENDENTE' && r[5] == 'TROCA')
-    .map(r => ({ id: r[0], de: r[2], qtd: r[4], data: new Date(r[1]).toLocaleTimeString() }));
-
-  // Envios que fiz e ainda não aceitaram (Só para visualizar)
-  const saidasPendentes = dadosTrans
-    .filter(r => r[2] == email && r[6] == 'PENDENTE' && r[5] == 'TROCA')
-    .map(r => ({ para: r[3], qtd: r[4] }));
-
-  return {
-    email: email,
-    saldo: meuSaldoRow[1],
-    colegas: listaColegas,
-    inbox: entradasPendentes,
-    outbox: saidasPendentes
-  };
-}
-
-// --- AÇÕES ---
-
-function novaTroca(destino, qtd) {
-  const ss = SpreadsheetApp.openById(SHEET_ID);
-  const abaTrans = ss.getSheetByName('Transacoes');
-  const abaSaldos = ss.getSheetByName('Saldos');
-  const eu = Session.getActiveUser().getEmail();
-  
-  // Valida Saldo Antes
-  const dadosSaldos = abaSaldos.getDataRange().getValues();
-  const meuSaldo = dadosSaldos.find(r => r[0] == eu)[1];
-  
-  // Soma o que já está pendente de saída para não deixar saldo negativo virtual
-  // (Lógica avançada: Se tenho 10, envio 5 pra A e 6 pra B, o sistema deve travar o segundo)
-  // Simplificação: Verifica saldo bruto agora.
-  if (meuSaldo < qtd) return { success: false, msg: "Saldo insuficiente!" };
-
-  // Cria ID único
-  const id = new Date().getTime();
-  
-  abaTrans.appendRow([id, new Date(), eu, destino, qtd, 'TROCA', 'PENDENTE']);
-  
-  return { success: true, msg: "Solicitação enviada! Aguardando aceite do colega." };
-}
-
-function responderTroca(idTransacao, aceitar) {
-  const ss = SpreadsheetApp.openById(SHEET_ID);
-  const abaTrans = ss.getSheetByName('Transacoes');
-  const abaSaldos = ss.getSheetByName('Saldos');
-  const eu = Session.getActiveUser().getEmail(); // Eu sou o DESTINO (quem aceita)
-
-  const dadosTrans = abaTrans.getDataRange().getValues();
-  const indexTrans = dadosTrans.findIndex(r => r[0] == idTransacao);
-  
-  if (indexTrans == -1) return { success: false, msg: "Transação não encontrada." };
-  
-  const transacao = dadosTrans[indexTrans]; // [id, data, DE, PARA, qtd, tipo, status]
-  const qtd = Number(transacao[4]);
-  const remetente = transacao[2];
-  
-  if (aceitar) {
-    // 1. Movimenta Saldos
-    const dadosSaldos = abaSaldos.getDataRange().getValues();
-    const idxRemetente = dadosSaldos.findIndex(r => r[0] == remetente);
-    const idxEu = dadosSaldos.findIndex(r => r[0] == eu);
-    
-    // Valida se o remetente ainda tem saldo (caso ele tenha tentado burlar)
-    if (dadosSaldos[idxRemetente][1] < qtd) {
-       abaTrans.getRange(indexTrans + 1, 7).setValue('CANCELADO_SALDO');
-       return { success: false, msg: "O remetente não tem mais saldo suficiente." };
+  <style>
+    :root {
+      --primary: #EE4D2D; /* Shopee Orange */
+      --primary-dark: #d63d1f;
+      --bg: #F5F7FA;
+      --card-bg: #ffffff;
+      --text-dark: #2C3E50;
     }
     
-    // Subtrai do Remetente
-    abaSaldos.getRange(idxRemetente + 1, 2).setValue(dadosSaldos[idxRemetente][1] - qtd);
-    // Adiciona para Mim
-    abaSaldos.getRange(idxEu + 1, 2).setValue(dadosSaldos[idxEu][1] + qtd);
+    body {
+      background-color: var(--bg);
+      font-family: 'Inter', sans-serif;
+      color: var(--text-dark);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Header Estiloso */
+    .app-header {
+      background: linear-gradient(135deg, #EE4D2D 0%, #FF7E5F 100%);
+      padding: 20px 20px 60px 20px;
+      border-radius: 0 0 25px 25px;
+      color: white;
+      box-shadow: 0 4px 15px rgba(238, 77, 45, 0.3);
+    }
+
+    /* Card de Saldo Flutuante */
+    .balance-card {
+      background: white;
+      margin-top: -40px;
+      border-radius: 20px;
+      padding: 25px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+      text-align: center;
+      position: relative;
+    }
+
+    .balance-number {
+      font-size: 3.5rem;
+      font-weight: 800;
+      color: var(--primary);
+      line-height: 1;
+    }
+
+    /* Botões de Ação */
+    .action-btn {
+      border: none;
+      background: white;
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+      transition: all 0.2s;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: #555;
+    }
+    .action-btn:active { transform: scale(0.96); }
+    .action-btn i { font-size: 2rem; margin-bottom: 10px; color: var(--primary); }
+    .action-btn strong { font-size: 0.9rem; }
+
+    /* Lista de Notificações */
+    .notification-item {
+      background: white;
+      border-left: 5px solid var(--primary);
+      border-radius: 12px;
+      padding: 15px;
+      margin-bottom: 10px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+      animation: slideIn 0.3s ease-out;
+    }
     
-    // 2. Atualiza Status
-    abaTrans.getRange(indexTrans + 1, 7).setValue('CONCLUIDO');
-    return { success: true, msg: "PDAs recebidos com sucesso!" };
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Utilitários */
+    .badge-pending { background-color: #FFF3CD; color: #856404; padding: 5px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: bold; }
+    .loader-overlay { position: fixed; top:0; left:0; width:100%; height:100%; background:white; z-index:9999; display:flex; justify-content:center; align-items:center; flex-direction:column;}
+  </style>
+</head>
+<body>
+
+  <div id="loader" class="loader-overlay">
+    <div class="spinner-border text-primary" style="width: 3rem; height: 3rem;" role="status"></div>
+    <p class="mt-3 fw-bold text-muted">Carregando Sistema...</p>
+  </div>
+
+  <div id="app-content" class="d-none">
     
-  } else {
-    // Rejeitar
-    abaTrans.getRange(indexTrans + 1, 7).setValue('REJEITADO');
-    return { success: true, msg: "Transferência recusada." };
-  }
-}
+    <div class="app-header">
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <small style="opacity: 0.8;">Bem-vindo,</small>
+          <h5 class="fw-bold mb-0" id="user-email">Carregando...</h5>
+        </div>
+        <div class="rounded-circle bg-white text-primary d-flex align-items-center justify-content-center" style="width: 40px; height: 40px;">
+          <i class="fas fa-user"></i>
+        </div>
+      </div>
+    </div>
+
+    <div class="container pb-5">
+      
+      <div class="balance-card mx-2">
+        <h6 class="text-uppercase text-muted small fw-bold tracking-wide">PDAs em minha posse</h6>
+        <div class="balance-number my-2" id="user-saldo">--</div>
+        <div class="badge bg-success bg-opacity-10 text-success px-3 py-2 rounded-pill">
+          <i class="fas fa-check-circle me-1"></i> Ativo
+        </div>
+      </div>
+
+      <div id="area-notificacoes" class="mt-4 d-none">
+        <h6 class="text-muted ms-2 mb-3 fw-bold"><i class="fas fa-bell text-warning me-2"></i>Aprovação Pendente</h6>
+        <div id="lista-inbox">
+          </div>
+      </div>
+
+      <div id="area-pendencias" class="mt-4 d-none">
+        <h6 class="text-muted ms-2 mb-3 fw-bold small">Aguardando colega aceitar...</h6>
+        <div id="lista-outbox">
+          </div>
+      </div>
+
+      <h6 class="text-muted ms-2 mt-4 mb-3 fw-bold">Ações Rápidas</h6>
+      <div class="row g-3 px-1">
+        
+        <div class="col-6">
+          <button class="action-btn w-100" onclick="abrirModalTransferir()">
+            <div class="icon-circle mb-2 bg-primary bg-opacity-10 text-primary p-3 rounded-circle">
+              <i class="fas fa-exchange-alt mb-0 fs-4"></i>
+            </div>
+            <strong>Transferir</strong>
+            <small class="text-muted" style="font-size: 0.7rem;">Passar para Líder</small>
+          </button>
+        </div>
+
+        <div class="col-6">
+          <button class="action-btn w-100" onclick="msgEstoque()">
+            <div class="icon-circle mb-2 bg-warning bg-opacity-10 text-warning p-3 rounded-circle">
+              <i class="fas fa-box-open mb-0 fs-4"></i>
+            </div>
+            <strong>Pedir Estoque</strong>
+            <small class="text-muted" style="font-size: 0.7rem;">Solicitar Admin</small>
+          </button>
+        </div>
+
+      </div>
+
+    </div>
+  </div>
+
+  <select id="data-colegas" class="d-none"></select>
+
+  <script>
+    // --- INICIALIZAÇÃO ---
+    window.onload = function() {
+      atualizarDados();
+    };
+
+    function atualizarDados() {
+      google.script.run.withSuccessHandler(renderApp).getAppDados();
+    }
+
+    function renderApp(dados) {
+      document.getElementById('loader').classList.add('d-none');
+      document.getElementById('app-content').classList.remove('d-none');
+      
+      // Preenche Header e Saldo
+      document.getElementById('user-email').innerText = dados.email.split('@')[0]; // Só o nome antes do @
+      
+      // Animação do número
+      animateValue(document.getElementById('user-saldo'), 0, dados.saldo, 1000);
+
+      // Preenche Select de Colegas (oculto)
+      const select = document.getElementById('data-colegas');
+      select.innerHTML = '';
+      dados.colegas.forEach(c => {
+        let opt = document.createElement('option');
+        opt.value = c; opt.text = c; select.add(opt);
+      });
+
+      // Renderiza Inbox (Para Aceitar)
+      const divInbox = document.getElementById('lista-inbox');
+      const areaNotif = document.getElementById('area-notificacoes');
+      divInbox.innerHTML = '';
+      
+      if (dados.inbox.length > 0) {
+        areaNotif.classList.remove('d-none');
+        dados.inbox.forEach(item => {
+          let card = `
+            <div class="notification-item d-flex justify-content-between align-items-center">
+              <div>
+                <div class="fw-bold text-dark">${item.de}</div>
+                <div class="small text-muted">quer te enviar <strong class="text-primary">${item.qtd} PDAs</strong></div>
+                <div class="small text-muted" style="font-size: 0.7em">${item.data}</div>
+              </div>
+              <div class="d-flex gap-2">
+                 <button class="btn btn-sm btn-outline-danger rounded-circle" onclick="responder('${item.id}', false)"><i class="fas fa-times"></i></button>
+                 <button class="btn btn-sm btn-success rounded-circle shadow" onclick="responder('${item.id}', true)"><i class="fas fa-check"></i></button>
+              </div>
+            </div>
+          `;
+          divInbox.innerHTML += card;
+        });
+      } else {
+        areaNotif.classList.add('d-none');
+      }
+
+      // Renderiza Outbox (Enviados)
+      const divOut = document.getElementById('lista-outbox');
+      const areaOut = document.getElementById('area-pendencias');
+      divOut.innerHTML = '';
+
+      if (dados.outbox.length > 0) {
+        areaOut.classList.remove('d-none');
+        dados.outbox.forEach(item => {
+          divOut.innerHTML += `
+            <div class="badge-pending d-flex justify-content-between mb-2">
+              <span>Enviando para <strong>${item.para.split('@')[0]}</strong></span>
+              <span>${item.qtd} un.</span>
+            </div>
+          `;
+        });
+      } else {
+        areaOut.classList.add('d-none');
+      }
+    }
+
+    // --- FUNÇÕES DE INTERAÇÃO (SWEETALERT) ---
+
+    async function abrirModalTransferir() {
+      // Pega lista do select oculto
+      const opcoesHTML = document.getElementById('data-colegas').innerHTML;
+      
+      const { value: formValues } = await Swal.fire({
+        title: 'Transferir Responsabilidade',
+        html:
+          '<p class="text-muted small">O colega precisará aceitar para o saldo sair da sua conta.</p>' +
+          '<input id="swal-qtd" type="number" class="swal2-input" placeholder="Quantidade">' +
+          '<select id="swal-dest" class="swal2-input">' +
+             '<option value="" disabled selected>Selecione o Líder...</option>' + 
+             opcoesHTML + 
+          '</select>',
+        focusConfirm: false,
+        showCancelButton: true,
+        confirmButtonColor: '#EE4D2D',
+        confirmButtonText: 'Enviar Solicitação',
+        cancelButtonText: 'Cancelar',
+        preConfirm: () => {
+          return [
+            document.getElementById('swal-dest').value,
+            document.getElementById('swal-qtd').value
+          ]
+        }
+      });
+
+      if (formValues) {
+        const [destino, qtd] = formValues;
+        if (!destino || !qtd) return Swal.fire('Erro', 'Preencha todos os campos', 'error');
+        
+        // Loading State
+        Swal.fire({title: 'Enviando...', didOpen: () => Swal.showLoading()});
+        
+        google.script.run.withSuccessHandler((res) => {
+          if(res.success) {
+            Swal.fire('Sucesso!', res.msg, 'success').then(() => atualizarDados());
+          } else {
+            Swal.fire('Ops!', res.msg, 'error');
+          }
+        }).novaTroca(destino, qtd);
+      }
+    }
+
+    function responder(id, aceitar) {
+      let titulo = aceitar ? 'Receber PDAs?' : 'Recusar PDAs?';
+      let texto = aceitar ? 'Isso adicionará ao seu saldo.' : 'A transação será cancelada.';
+      let cor = aceitar ? '#28a745' : '#dc3545';
+
+      Swal.fire({
+        title: titulo,
+        text: texto,
+        icon: aceitar ? 'question' : 'warning',
+        showCancelButton: true,
+        confirmButtonColor: cor,
+        confirmButtonText: aceitar ? 'Sim, receber' : 'Sim, recusar'
+      }).then((result) => {
+        if (result.isConfirmed) {
+          Swal.fire({title: 'Processando...', didOpen: () => Swal.showLoading()});
+          google.script.run.withSuccessHandler((res) => {
+             if(res.success) {
+                Swal.fire('Feito!', res.msg, 'success').then(() => atualizarDados());
+             } else {
+                Swal.fire('Erro', res.msg, 'error');
+             }
+          }).responderTroca(id, aceitar);
+        }
+      });
+    }
+    
+    function msgEstoque() {
+       Swal.fire('Em breve', 'A solicitação ao estoque será implementada na próxima fase.', 'info');
+    }
+
+    // Efeito visual de contagem
+    function animateValue(obj, start, end, duration) {
+      let startTimestamp = null;
+      const step = (timestamp) => {
+        if (!startTimestamp) startTimestamp = timestamp;
+        const progress = Math.min((timestamp - startTimestamp) / duration, 1);
+        obj.innerHTML = Math.floor(progress * (end - start) + start);
+        if (progress < 1) {
+          window.requestAnimationFrame(step);
+        }
+      };
+      window.requestAnimationFrame(step);
+    }
+  </script>
+</body>
+</html>
